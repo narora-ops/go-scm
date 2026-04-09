@@ -36,14 +36,6 @@ type repository struct {
 	} `json:"links"`
 }
 
-type perms struct {
-	Values []*perm `json:"values"`
-}
-
-type perm struct {
-	Permissions string `json:"permission"`
-}
-
 type hooks struct {
 	pagination
 	Values []*hook `json:"values"`
@@ -115,13 +107,13 @@ func (s *repositoryService) findPermsWithIdentifier(ctx context.Context, repo st
 		if strings.Contains(repo, "/") {
 			_, repoSlug = scm.Split(repo)
 		}
-		return s.fetchRepoPerms(ctx, workspace, repoSlug)
+		return s.probeRepoPerms(ctx, workspace, repoSlug)
 	}
 
 	// If repo is in "workspace/repo" format, use the workspace from repo identifier
 	if strings.Contains(repo, "/") {
 		workspace, repoSlug = scm.Split(repo)
-		return s.fetchRepoPerms(ctx, workspace, repoSlug)
+		return s.probeRepoPerms(ctx, workspace, repoSlug)
 	}
 
 	// No workspace available
@@ -137,7 +129,7 @@ func (s *repositoryService) findPermsAcrossWorkspaces(ctx context.Context, repoS
 	}
 
 	for _, workspace := range workspaces {
-		perm, res, err := s.fetchRepoPerms(ctx, workspace, repoSlug)
+		perm, res, err := s.probeRepoPerms(ctx, workspace, repoSlug)
 		if err != nil {
 			// If it's a 404, the repo doesn't exist in this workspace
 			if res != nil && res.Status == 404 {
@@ -340,24 +332,6 @@ func anonymizeLink(link string) (href string) {
 	return parsed.String()
 }
 
-func convertPerms(from *perms) *scm.Perm {
-	to := new(scm.Perm)
-	if len(from.Values) != 1 {
-		return to
-	}
-	switch from.Values[0].Permissions {
-	case "admin":
-		to.Pull = true
-		to.Push = true
-		to.Admin = true
-	case "write":
-		to.Pull = true
-		to.Push = true
-	default:
-		to.Pull = true
-	}
-	return to
-}
 
 func convertHookList(from *hooks) []*scm.Hook {
 	to := []*scm.Hook{}
@@ -467,42 +441,46 @@ func convertFromState(from scm.State) string {
 	}
 }
 
-// workspaceRepoPerms represents the response from
-// GET /2.0/workspaces/{workspace}/permissions/repositories/{repo_slug}
-type workspaceRepoPerms struct {
-	Values []*workspaceRepoPerm `json:"values"`
-}
+// probeRepoPerms determines the authenticated user's effective permission on a repository
+// by probing the repositories list with role filters. This works for any authenticated user
+// without requiring workspace-admin privileges.
+//
+// It uses GET /2.0/repositories/{workspace}?q=full_name="ws/repo"&role=X which returns
+// only repos where the calling user holds the specified role.
+func (s *repositoryService) probeRepoPerms(ctx context.Context, workspace, repoSlug string) (*scm.Perm, *scm.Response, error) {
+	fullName := workspace + "/" + repoSlug
+	qFilter := fmt.Sprintf("full_name=%q", fullName)
 
-type workspaceRepoPerm struct {
-	Permission string `json:"permission"` // "admin", "write", "read"
-}
-
-func convertWorkspaceRepoPerms(from *workspaceRepoPerms) *scm.Perm {
-	to := new(scm.Perm)
-	if len(from.Values) == 0 {
-		return to
-	}
-	switch from.Values[0].Permission {
-	case "admin":
-		to.Pull = true
-		to.Push = true
-		to.Admin = true
-	case "write":
-		to.Pull = true
-		to.Push = true
-	default:
-		to.Pull = true
-	}
-	return to
-}
-
-// fetchRepoPerms fetches repository permissions for a given workspace and repo slug.
-func (s *repositoryService) fetchRepoPerms(ctx context.Context, workspace, repoSlug string) (*scm.Perm, *scm.Response, error) {
-	path := fmt.Sprintf("2.0/workspaces/%s/permissions/repositories/%s", workspace, repoSlug)
-	out := new(workspaceRepoPerms)
+	// Check admin access
+	params := url.Values{"q": {qFilter}, "role": {"admin"}}
+	path := fmt.Sprintf("2.0/repositories/%s?%s", workspace, params.Encode())
+	out := new(repositories)
 	res, err := s.client.do(ctx, "GET", path, nil, out)
 	if err != nil {
 		return nil, res, err
 	}
-	return convertWorkspaceRepoPerms(out), res, nil
+	if len(out.Values) > 0 {
+		return &scm.Perm{Pull: true, Push: true, Admin: true}, res, nil
+	}
+
+	// Check contributor (write) access
+	params = url.Values{"q": {qFilter}, "role": {"contributor"}}
+	path = fmt.Sprintf("2.0/repositories/%s?%s", workspace, params.Encode())
+	out = new(repositories)
+	res, err = s.client.do(ctx, "GET", path, nil, out)
+	if err != nil {
+		return nil, res, err
+	}
+	if len(out.Values) > 0 {
+		return &scm.Perm{Pull: true, Push: true}, res, nil
+	}
+
+	// Fallback: direct repo fetch — a 200 means the user has at least read access.
+	// A 404/403 means no access (treated as not found in this workspace).
+	repoOut := new(repository)
+	res, err = s.client.do(ctx, "GET", fmt.Sprintf("2.0/repositories/%s", fullName), nil, repoOut)
+	if err != nil {
+		return nil, res, err
+	}
+	return &scm.Perm{Pull: true}, res, nil
 }

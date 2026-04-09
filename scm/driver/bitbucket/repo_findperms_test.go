@@ -24,15 +24,48 @@ func TestFindPerms_ErrorWhenAllWorkspaces404(t *testing.T) {
 		Type("application/json").
 		BodyString(`{"values": [{"workspace": {"slug": "ws1"}}, {"workspace": {"slug": "ws2"}}], "next": ""}`)
 
-	// Both workspaces return 404
+	// ws1: admin check → empty, contributor check → empty, direct fetch → 404
 	gock.New("https://api.bitbucket.org").
-		Get("/2.0/workspaces/ws1/permissions/repositories/nonexistent-repo").
+		Get("/2.0/repositories/ws1").
+		MatchParam("q", `full_name="ws1/nonexistent-repo"`).
+		MatchParam("role", "admin").
+		Reply(200).
+		Type("application/json").
+		BodyString(`{"values": []}`)
+
+	gock.New("https://api.bitbucket.org").
+		Get("/2.0/repositories/ws1").
+		MatchParam("q", `full_name="ws1/nonexistent-repo"`).
+		MatchParam("role", "contributor").
+		Reply(200).
+		Type("application/json").
+		BodyString(`{"values": []}`)
+
+	gock.New("https://api.bitbucket.org").
+		Get("/2.0/repositories/ws1/nonexistent-repo").
 		Reply(404).
 		Type("application/json").
 		BodyString(`{"error": {"message": "Repository not found"}}`)
 
+	// ws2: same pattern
 	gock.New("https://api.bitbucket.org").
-		Get("/2.0/workspaces/ws2/permissions/repositories/nonexistent-repo").
+		Get("/2.0/repositories/ws2").
+		MatchParam("q", `full_name="ws2/nonexistent-repo"`).
+		MatchParam("role", "admin").
+		Reply(200).
+		Type("application/json").
+		BodyString(`{"values": []}`)
+
+	gock.New("https://api.bitbucket.org").
+		Get("/2.0/repositories/ws2").
+		MatchParam("q", `full_name="ws2/nonexistent-repo"`).
+		MatchParam("role", "contributor").
+		Reply(200).
+		Type("application/json").
+		BodyString(`{"values": []}`)
+
+	gock.New("https://api.bitbucket.org").
+		Get("/2.0/repositories/ws2/nonexistent-repo").
 		Reply(404).
 		Type("application/json").
 		BodyString(`{"error": {"message": "Repository not found"}}`)
@@ -70,7 +103,7 @@ func TestFindPerms_ErrorWhenWorkspaceFetchFails(t *testing.T) {
 	}
 }
 
-// TestFindPerms_NoPermissions tests when user has no permissions (empty values array)
+// TestFindPerms_NoPermissionsInAnyWorkspace tests when user has no access to the repo
 func TestFindPerms_NoPermissionsInAnyWorkspace(t *testing.T) {
 	defer gock.Off()
 
@@ -83,20 +116,34 @@ func TestFindPerms_NoPermissionsInAnyWorkspace(t *testing.T) {
 		Type("application/json").
 		BodyString(`{"values": [{"workspace": {"slug": "ws1"}}], "next": ""}`)
 
-	// Workspace returns empty permissions (no access)
+	// ws1: admin check → empty, contributor check → empty, direct fetch → 404 (no access)
 	gock.New("https://api.bitbucket.org").
-		Get("/2.0/workspaces/ws1/permissions/repositories/test-repo").
+		Get("/2.0/repositories/ws1").
+		MatchParam("q", `full_name="ws1/test-repo"`).
+		MatchParam("role", "admin").
 		Reply(200).
 		Type("application/json").
 		BodyString(`{"values": []}`)
 
+	gock.New("https://api.bitbucket.org").
+		Get("/2.0/repositories/ws1").
+		MatchParam("q", `full_name="ws1/test-repo"`).
+		MatchParam("role", "contributor").
+		Reply(200).
+		Type("application/json").
+		BodyString(`{"values": []}`)
+
+	gock.New("https://api.bitbucket.org").
+		Get("/2.0/repositories/ws1/test-repo").
+		Reply(404).
+		Type("application/json").
+		BodyString(`{"error": {"message": "Repository not found"}}`)
+
 	client, _ := New("https://api.bitbucket.org")
 	_, _, err := client.Repositories.FindPerms(context.Background(), "test-repo")
 
-	// When user has no permissions, current implementation returns error
-	// because empty permissions don't satisfy the "has any access" check
 	if err == nil {
-		t.Fatal("Expected error when user has no permissions")
+		t.Fatal("Expected error when user has no access to repository")
 	}
 
 	if err.Error() != "repository test-repo not found in any workspace" {
@@ -104,7 +151,7 @@ func TestFindPerms_NoPermissionsInAnyWorkspace(t *testing.T) {
 	}
 }
 
-// TestFindPerms_NetworkErrorInMiddleWorkspace tests partial network failure
+// TestFindPerms_NetworkErrorReturnsImmediately tests partial network failure
 func TestFindPerms_NetworkErrorReturnsImmediately(t *testing.T) {
 	defer gock.Off()
 
@@ -117,9 +164,11 @@ func TestFindPerms_NetworkErrorReturnsImmediately(t *testing.T) {
 		Type("application/json").
 		BodyString(`{"values": [{"workspace": {"slug": "ws1"}}, {"workspace": {"slug": "ws2"}}], "next": ""}`)
 
-	// First workspace returns 500 (not a 404)
+	// ws1 admin check returns 500 (non-404 error) → return immediately
 	gock.New("https://api.bitbucket.org").
-		Get("/2.0/workspaces/ws1/permissions/repositories/test-repo").
+		Get("/2.0/repositories/ws1").
+		MatchParam("q", `full_name="ws1/test-repo"`).
+		MatchParam("role", "admin").
 		Reply(500).
 		Type("application/json").
 		BodyString(`{"error": {"message": "Internal server error"}}`)
@@ -137,7 +186,7 @@ func TestFindPerms_NetworkErrorReturnsImmediately(t *testing.T) {
 	}
 }
 
-// TestFindPerms_With404ThenSuccess tests that iteration continues on 404
+// TestFindPerms_Continues404ToSuccess tests that iteration continues on 404
 func TestFindPerms_Continues404ToSuccess(t *testing.T) {
 	defer gock.Off()
 
@@ -150,19 +199,37 @@ func TestFindPerms_Continues404ToSuccess(t *testing.T) {
 		Type("application/json").
 		BodyString(`{"values": [{"workspace": {"slug": "ws1"}}, {"workspace": {"slug": "ws2"}}], "next": ""}`)
 
-	// First workspace returns 404 (repo not in this workspace)
+	// ws1: admin → empty, contributor → empty, direct fetch → 404
 	gock.New("https://api.bitbucket.org").
-		Get("/2.0/workspaces/ws1/permissions/repositories/test-repo").
+		Get("/2.0/repositories/ws1").
+		MatchParam("q", `full_name="ws1/test-repo"`).
+		MatchParam("role", "admin").
+		Reply(200).
+		Type("application/json").
+		BodyString(`{"values": []}`)
+
+	gock.New("https://api.bitbucket.org").
+		Get("/2.0/repositories/ws1").
+		MatchParam("q", `full_name="ws1/test-repo"`).
+		MatchParam("role", "contributor").
+		Reply(200).
+		Type("application/json").
+		BodyString(`{"values": []}`)
+
+	gock.New("https://api.bitbucket.org").
+		Get("/2.0/repositories/ws1/test-repo").
 		Reply(404).
 		Type("application/json").
 		BodyString(`{"error": {"message": "Not found"}}`)
 
-	// Second workspace has the repo with admin permissions
+	// ws2: admin check returns repo → user is admin
 	gock.New("https://api.bitbucket.org").
-		Get("/2.0/workspaces/ws2/permissions/repositories/test-repo").
+		Get("/2.0/repositories/ws2").
+		MatchParam("q", `full_name="ws2/test-repo"`).
+		MatchParam("role", "admin").
 		Reply(200).
 		Type("application/json").
-		File("testdata/workspace_repo_perms.json")
+		BodyString(`{"values": [{}]}`)
 
 	client, _ := New("https://api.bitbucket.org")
 	perm, _, err := client.Repositories.FindPerms(context.Background(), "test-repo")
@@ -201,7 +268,7 @@ func TestFindPerms_EmptyWorkspaceList(t *testing.T) {
 	}
 }
 
-// TestFindPerms_WorkspaceInURLWithFullRepoPath tests that URL workspace is used
+// TestFindPerms_WorkspaceInURLExtractionWithSlash tests that URL workspace is used
 // even when repo has workspace/repo format - it extracts just the repo slug
 func TestFindPerms_WorkspaceInURLExtractionWithSlash(t *testing.T) {
 	defer gock.Off()
@@ -209,10 +276,12 @@ func TestFindPerms_WorkspaceInURLExtractionWithSlash(t *testing.T) {
 	// When workspace is in URL and repo has workspace/repo format,
 	// it should use URL workspace and extract just the repo slug
 	gock.New("https://api.bitbucket.org").
-		Get("/2.0/workspaces/url-workspace/permissions/repositories/actual-repo").
+		Get("/2.0/repositories/url-workspace").
+		MatchParam("q", `full_name="url-workspace/actual-repo"`).
+		MatchParam("role", "admin").
 		Reply(200).
 		Type("application/json").
-		File("testdata/workspace_repo_perms.json")
+		BodyString(`{"values": [{}]}`)
 
 	client, _ := New("https://api.bitbucket.org/repositories/url-workspace")
 	perm, _, err := client.Repositories.FindPerms(context.Background(), "different-workspace/actual-repo")
@@ -240,10 +309,12 @@ func TestFindPerms_URLWorkspaceTakesPriority(t *testing.T) {
 
 	// URL workspace should take priority over repo identifier workspace
 	gock.New("https://api.bitbucket.org").
-		Get("/2.0/workspaces/url-workspace/permissions/repositories/repo-slug").
+		Get("/2.0/repositories/url-workspace").
+		MatchParam("q", `full_name="url-workspace/repo-slug"`).
+		MatchParam("role", "admin").
 		Reply(200).
 		Type("application/json").
-		File("testdata/workspace_repo_perms.json")
+		BodyString(`{"values": [{}]}`)
 
 	// Should NOT call identifier-workspace even though repo is "identifier-workspace/repo-slug"
 	client, _ := New("https://api.bitbucket.org/repositories/url-workspace")
@@ -286,19 +357,37 @@ func TestFindPerms_WorkspacePagination(t *testing.T) {
 		Type("application/json").
 		BodyString(`{"values": [{"workspace": {"slug": "ws2"}}], "next": ""}`)
 
-	// First workspace returns 404
+	// ws1: admin → empty, contributor → empty, direct fetch → 404
 	gock.New("https://api.bitbucket.org").
-		Get("/2.0/workspaces/ws1/permissions/repositories/test-repo").
+		Get("/2.0/repositories/ws1").
+		MatchParam("q", `full_name="ws1/test-repo"`).
+		MatchParam("role", "admin").
+		Reply(200).
+		Type("application/json").
+		BodyString(`{"values": []}`)
+
+	gock.New("https://api.bitbucket.org").
+		Get("/2.0/repositories/ws1").
+		MatchParam("q", `full_name="ws1/test-repo"`).
+		MatchParam("role", "contributor").
+		Reply(200).
+		Type("application/json").
+		BodyString(`{"values": []}`)
+
+	gock.New("https://api.bitbucket.org").
+		Get("/2.0/repositories/ws1/test-repo").
 		Reply(404).
 		Type("application/json").
 		BodyString(`{"error": {"message": "Not found"}}`)
 
-	// Second workspace (from page 2) has the repo
+	// ws2 (from page 2): admin check returns repo
 	gock.New("https://api.bitbucket.org").
-		Get("/2.0/workspaces/ws2/permissions/repositories/test-repo").
+		Get("/2.0/repositories/ws2").
+		MatchParam("q", `full_name="ws2/test-repo"`).
+		MatchParam("role", "admin").
 		Reply(200).
 		Type("application/json").
-		File("testdata/workspace_repo_perms.json")
+		BodyString(`{"values": [{}]}`)
 
 	client, _ := New("https://api.bitbucket.org")
 	perm, _, err := client.Repositories.FindPerms(context.Background(), "test-repo")
@@ -308,6 +397,6 @@ func TestFindPerms_WorkspacePagination(t *testing.T) {
 	}
 
 	if !perm.Admin {
-		t.Error("Expected to find permissions from workspace on page 2")
+		t.Error("Expected to find admin permissions from workspace on page 2")
 	}
 }

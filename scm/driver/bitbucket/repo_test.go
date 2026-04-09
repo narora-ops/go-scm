@@ -64,11 +64,14 @@ func TestRepositoryFind_NotFound(t *testing.T) {
 func TestRepositoryPerms(t *testing.T) {
 	defer gock.Off()
 
+	// Admin check returns the repo → user is admin
 	gock.New("https://api.bitbucket.org").
-		Get("/2.0/workspaces/atlassian/permissions/repositories/stash-example-plugin").
+		Get("/2.0/repositories/atlassian").
+		MatchParam("q", `full_name="atlassian/stash-example-plugin"`).
+		MatchParam("role", "admin").
 		Reply(200).
 		Type("application/json").
-		File("testdata/workspace_repo_perms.json")
+		BodyString(`{"values": [{}]}`)
 
 	client, _ := New("https://api.bitbucket.org")
 	got, _, err := client.Repositories.FindPerms(context.Background(), "atlassian/stash-example-plugin")
@@ -86,14 +89,91 @@ func TestRepositoryPerms(t *testing.T) {
 	}
 }
 
+func TestRepositoryPermsWrite(t *testing.T) {
+	defer gock.Off()
+
+	// Admin check returns empty → not admin
+	gock.New("https://api.bitbucket.org").
+		Get("/2.0/repositories/atlassian").
+		MatchParam("q", `full_name="atlassian/stash-example-plugin"`).
+		MatchParam("role", "admin").
+		Reply(200).
+		Type("application/json").
+		BodyString(`{"values": []}`)
+
+	// Contributor check returns the repo → user has write access
+	gock.New("https://api.bitbucket.org").
+		Get("/2.0/repositories/atlassian").
+		MatchParam("q", `full_name="atlassian/stash-example-plugin"`).
+		MatchParam("role", "contributor").
+		Reply(200).
+		Type("application/json").
+		BodyString(`{"values": [{}]}`)
+
+	client, _ := New("https://api.bitbucket.org")
+	got, _, err := client.Repositories.FindPerms(context.Background(), "atlassian/stash-example-plugin")
+	if err != nil {
+		t.Error(err)
+	}
+
+	want := &scm.Perm{Pull: true, Push: true, Admin: false}
+	if diff := cmp.Diff(got, want); diff != "" {
+		t.Errorf("Unexpected Results")
+		t.Log(diff)
+	}
+}
+
+func TestRepositoryPermsRead(t *testing.T) {
+	defer gock.Off()
+
+	// Admin check returns empty → not admin
+	gock.New("https://api.bitbucket.org").
+		Get("/2.0/repositories/atlassian").
+		MatchParam("q", `full_name="atlassian/stash-example-plugin"`).
+		MatchParam("role", "admin").
+		Reply(200).
+		Type("application/json").
+		BodyString(`{"values": []}`)
+
+	// Contributor check returns empty → not contributor
+	gock.New("https://api.bitbucket.org").
+		Get("/2.0/repositories/atlassian").
+		MatchParam("q", `full_name="atlassian/stash-example-plugin"`).
+		MatchParam("role", "contributor").
+		Reply(200).
+		Type("application/json").
+		BodyString(`{"values": []}`)
+
+	// Direct repo fetch succeeds → user has read access
+	gock.New("https://api.bitbucket.org").
+		Get("/2.0/repositories/atlassian/stash-example-plugin").
+		Reply(200).
+		Type("application/json").
+		File("testdata/repo.json")
+
+	client, _ := New("https://api.bitbucket.org")
+	got, _, err := client.Repositories.FindPerms(context.Background(), "atlassian/stash-example-plugin")
+	if err != nil {
+		t.Error(err)
+	}
+
+	want := &scm.Perm{Pull: true, Push: false, Admin: false}
+	if diff := cmp.Diff(got, want); diff != "" {
+		t.Errorf("Unexpected Results")
+		t.Log(diff)
+	}
+}
+
 func TestRepositoryPermsWithWorkspaceInURL(t *testing.T) {
 	defer gock.Off()
 
 	gock.New("https://api.bitbucket.org").
-		Get("/2.0/workspaces/my-workspace/permissions/repositories/my-repo").
+		Get("/2.0/repositories/my-workspace").
+		MatchParam("q", `full_name="my-workspace/my-repo"`).
+		MatchParam("role", "admin").
 		Reply(200).
 		Type("application/json").
-		File("testdata/workspace_repo_perms.json")
+		BodyString(`{"values": [{}]}`)
 
 	client, _ := New("https://api.bitbucket.org/repositories/my-workspace")
 	got, _, err := client.Repositories.FindPerms(context.Background(), "my-repo")
@@ -115,10 +195,12 @@ func TestRepositoryPermsWithWorkspaceInURLAndFullRepoName(t *testing.T) {
 	defer gock.Off()
 
 	gock.New("https://api.bitbucket.org").
-		Get("/2.0/workspaces/my-workspace/permissions/repositories/my-repo").
+		Get("/2.0/repositories/my-workspace").
+		MatchParam("q", `full_name="my-workspace/my-repo"`).
+		MatchParam("role", "admin").
 		Reply(200).
 		Type("application/json").
-		File("testdata/workspace_repo_perms.json")
+		BodyString(`{"values": [{}]}`)
 
 	client, _ := New("https://api.bitbucket.org/repositories/my-workspace")
 	// Pass full repo name with workspace prefix - should extract just the repo slug
@@ -148,17 +230,37 @@ func TestRepositoryPermsIterateWorkspaces(t *testing.T) {
 		Type("application/json").
 		File("testdata/user_workspaces.json")
 
+	// my-workspace: admin check → empty, contributor check → empty, direct fetch → 404
 	gock.New("https://api.bitbucket.org").
-		Get("/2.0/workspaces/my-workspace/permissions/repositories/test-repo").
+		Get("/2.0/repositories/my-workspace").
+		MatchParam("q", `full_name="my-workspace/test-repo"`).
+		MatchParam("role", "admin").
 		Reply(200).
 		Type("application/json").
 		BodyString(`{"values": []}`)
 
 	gock.New("https://api.bitbucket.org").
-		Get("/2.0/workspaces/team-workspace/permissions/repositories/test-repo").
+		Get("/2.0/repositories/my-workspace").
+		MatchParam("q", `full_name="my-workspace/test-repo"`).
+		MatchParam("role", "contributor").
 		Reply(200).
 		Type("application/json").
-		File("testdata/workspace_repo_perms.json")
+		BodyString(`{"values": []}`)
+
+	gock.New("https://api.bitbucket.org").
+		Get("/2.0/repositories/my-workspace/test-repo").
+		Reply(404).
+		Type("application/json").
+		BodyString(`{"error": {"message": "Repository not found"}}`)
+
+	// team-workspace: admin check returns repo → Admin=true
+	gock.New("https://api.bitbucket.org").
+		Get("/2.0/repositories/team-workspace").
+		MatchParam("q", `full_name="team-workspace/test-repo"`).
+		MatchParam("role", "admin").
+		Reply(200).
+		Type("application/json").
+		BodyString(`{"values": [{}]}`)
 
 	client, _ := New("https://api.bitbucket.org")
 	got, _, err := client.Repositories.FindPerms(context.Background(), "test-repo")
@@ -176,57 +278,6 @@ func TestRepositoryPermsIterateWorkspaces(t *testing.T) {
 	}
 }
 
-func TestConvertWorkspaceRepoPerms(t *testing.T) {
-	tests := []struct {
-		name string
-		from *workspaceRepoPerms
-		want *scm.Perm
-	}{
-		{
-			name: "admin permission",
-			from: &workspaceRepoPerms{
-				Values: []*workspaceRepoPerm{
-					{Permission: "admin"},
-				},
-			},
-			want: &scm.Perm{Admin: true, Push: true, Pull: true},
-		},
-		{
-			name: "write permission",
-			from: &workspaceRepoPerms{
-				Values: []*workspaceRepoPerm{
-					{Permission: "write"},
-				},
-			},
-			want: &scm.Perm{Admin: false, Push: true, Pull: true},
-		},
-		{
-			name: "read permission",
-			from: &workspaceRepoPerms{
-				Values: []*workspaceRepoPerm{
-					{Permission: "read"},
-				},
-			},
-			want: &scm.Perm{Admin: false, Push: false, Pull: true},
-		},
-		{
-			name: "empty values",
-			from: &workspaceRepoPerms{
-				Values: []*workspaceRepoPerm{},
-			},
-			want: &scm.Perm{Admin: false, Push: false, Pull: false},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := convertWorkspaceRepoPerms(tt.from)
-			if diff := cmp.Diff(tt.want, got); diff != "" {
-				t.Errorf("convertWorkspaceRepoPerms() mismatch (-want +got):\n%s", diff)
-			}
-		})
-	}
-}
 
 func TestRepositoryList(t *testing.T) {
 	defer gock.Off()
@@ -628,41 +679,6 @@ func TestConvertState(t *testing.T) {
 	for _, test := range tests {
 		if got, want := convertState(test.src), test.dst; got != want {
 			t.Errorf("Want state %s converted to %v", test.src, test.dst)
-		}
-	}
-}
-
-func TestConvertPerms(t *testing.T) {
-	tests := []struct {
-		src *perm
-		dst *scm.Perm
-	}{
-		{
-			src: &perm{Permissions: "admin"},
-			dst: &scm.Perm{Admin: true, Push: true, Pull: true},
-		},
-		{
-			src: &perm{Permissions: "write"},
-			dst: &scm.Perm{Admin: false, Push: true, Pull: true},
-		},
-		{
-			src: &perm{Permissions: "read"},
-			dst: &scm.Perm{Admin: false, Push: false, Pull: true},
-		},
-		{
-			src: nil,
-			dst: &scm.Perm{Admin: false, Push: false, Pull: false},
-		},
-	}
-	for _, test := range tests {
-		src := new(perms)
-		if test.src != nil {
-			src.Values = append(src.Values, test.src)
-		}
-		dst := convertPerms(src)
-		if diff := cmp.Diff(test.dst, dst); diff != "" {
-			t.Errorf("Unexpected Results")
-			t.Log(diff)
 		}
 	}
 }

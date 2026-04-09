@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls:*)",
+      "WebFetch(domain:api.bitbucket.org)",
+      "WebFetch(domain:developer.atlassian.com)",
+      "WebSearch",
+      "WebFetch(domain:docs.go-atlassian.io)",
+      "WebFetch(domain:community.atlassian.com)",
+      "WebFetch(domain:support.atlassian.com)"
+    ]
+  }
+}
